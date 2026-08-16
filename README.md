@@ -117,6 +117,24 @@ Script Docker'ı kurar, `.env` dosyasını rastgele parolalarla oluşturur, güv
 
 Üretimde API doğrudan dışarı açılmaz; tüm trafik Caddy üzerinden HTTPS ile geçer, RabbitMQ paneli dışarıya kapalıdır.
 
+## Güvenlik ve kaynak sınırları
+
+Sistem sabit kaynaklı bir sunucuda çalışacak şekilde tasarlandı: hiçbir bileşen kendiliğinden büyüyemez, dolayısıyla bir hata veya yoğun trafik beklenmedik kaynak tüketimine yol açamaz.
+
+| Sınır | Değer | Neden |
+|---|---|---|
+| Veri saklama | 7 gün | Tablo süresiz büyüyüp diski doldurmasın; eski kayıtlar parçalı olarak silinir |
+| WebSocket istemcisi | 50 | Bir istemci canlı akıştan ayda ~11 GB alır; 50 istemci ~550 GB, ücretsiz çıkış kotasının %6'sı |
+| IP başına bağlantı | 5 | Tek istemcinin hatalı yeniden bağlanma döngüsü sunucuyu meşgul edemesin |
+| İstemci kuyruğu | 1000 mesaj | Yavaş istemcinin mesajı düşürülür, yayın yavaşlamaz |
+| RabbitMQ prefetch | batch × 2 | Processor belleğinde sınırsız mesaj birikmez |
+| Konteyner belleği | 256 MB – 1 GB | Üretim kaplamasında her servise sınır konur |
+| İstek gövdesi | 64 KB | Yazma ucu olmayan bir servis; büyük gövde baştan reddedilir |
+
+Ayrıca: konteynerler root olmayan kullanıcıyla çalışır, üretimde API ve RabbitMQ doğrudan dışarı açılmaz (yalnızca Caddy 80/443), HSTS ve CSP başlıkları uygulanır, SSH parola ile değil yalnızca anahtarla yapılır ve `allowed_ssh_cidr` ile tek IP'ye kısıtlanabilir.
+
+**Bulut hesabında maliyet koruması** (`infra/`): değişkenlerde Always Free kotası doğrulanır, `preflight.ps1` planı beyaz listeye göre denetleyip ücretli kaynak içeren `apply`'ı engeller, sıfır harcama bütçe alarmı kurulur ve `destroy.ps1` tek komutta her şeyi siler. Bunların hepsinin üstünde duran asıl garanti, hesabın Free Tier olarak kalmasıdır.
+
 ## Yol haritası
 
 - [ ] İkinci veri kaynağı (AIS gemi telemetrisi) ve kaynaklar arası korelasyon

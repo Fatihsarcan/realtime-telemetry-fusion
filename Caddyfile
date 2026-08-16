@@ -2,10 +2,35 @@
 # DOMAIN ortam degiskeni docker-compose.prod.yml uzerinden gelir.
 # Ornek: DOMAIN=telemetry-fusion.duckdns.org
 
+{
+	# Sunucu kimligini gizle: hangi surumun calistigi disaridan gorunmesin
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
 {$DOMAIN} {
 	encode gzip
 
-	# WebSocket dahil tum trafik API servisine
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# Harita kutuphanesi ve dosemeler disinda hicbir dis kaynak yuklenemez
+		Content-Security-Policy "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://*.basemaps.cartocdn.com https://unpkg.com; connect-src 'self' ws: wss:"
+	}
+
+	# Yazma ucu olmayan bir servis; buyuk govdeli istekleri bastan reddet
+	request_body {
+		max_size 64KB
+	}
+
+	# RabbitMQ yonetim arayuzu ve benzeri yollar disariya hic acilmaz
+	@yasak path /api/internal* /admin*
+	respond @yasak 404
+
 	reverse_proxy api:8000 {
 		header_up X-Real-IP {remote_host}
 	}

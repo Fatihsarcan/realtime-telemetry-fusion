@@ -17,7 +17,7 @@ import time
 import aio_pika
 import redis.asyncio as aioredis
 
-from store import create_pool, write_batch
+from store import create_pool, purge_old, write_batch
 from telemetry_common import Observation, get_logger, settings
 from telemetry_common.bus import connect, declare_topology
 
@@ -131,6 +131,29 @@ async def periodic_flusher(pool, redis, dedup, buffer, lock, stopping: asyncio.E
         await flush(pool, redis, dedup, buffer, lock)
 
 
+async def retention_worker(pool, stopping: asyncio.Event) -> None:
+    """Saklama suresini asan kayitlari duzenli olarak siler.
+
+    Disk sabit boyutlu: temizlik olmazsa tablo suresiz buyur ve disk dolunca
+    sistem yazamaz hale gelir. Otomatik buyuyen bir kaynak olmadigi icin bu
+    ayni zamanda beklenmedik maliyet ihtimalini de ortadan kaldirir.
+    """
+    while not stopping.is_set():
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stopping.wait(), timeout=settings.retention_interval_s)
+        if stopping.is_set():
+            return
+        try:
+            deleted = await purge_old(pool, settings.retention_days)
+            if deleted:
+                log.info(
+                    "eski kayitlar silindi",
+                    extra={"fields": {"deleted": deleted, "retention_days": settings.retention_days}},
+                )
+        except Exception as exc:  # noqa: BLE001 - temizlik hatasi pipeline'i durdurmamali
+            log.error("temizlik hatasi", extra={"fields": {"error": str(exc)}})
+
+
 async def run() -> None:
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -154,6 +177,7 @@ async def run() -> None:
         buffer: list = []
         lock = asyncio.Lock()
         flusher = asyncio.create_task(periodic_flusher(pool, redis, dedup, buffer, lock, stopping))
+        cleaner = asyncio.create_task(retention_worker(pool, stopping))
 
         try:
             async with queue.iterator() as messages:
@@ -176,9 +200,10 @@ async def run() -> None:
                         await flush(pool, redis, dedup, buffer, lock)
         finally:
             stopping.set()
-            flusher.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await flusher
+            for task in (flusher, cleaner):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             await flush(pool, redis, dedup, buffer, lock)
 
     await redis.aclose()

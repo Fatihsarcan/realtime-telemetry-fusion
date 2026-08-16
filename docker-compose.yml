@@ -73,6 +73,8 @@ services:
       SERVICE_NAME: processor
       PROCESSOR_BATCH_SIZE: ${PROCESSOR_BATCH_SIZE:-500}
       PROCESSOR_BATCH_FLUSH_MS: ${PROCESSOR_BATCH_FLUSH_MS:-1000}
+      RETENTION_DAYS: ${RETENTION_DAYS:-7}
+      RETENTION_INTERVAL_S: ${RETENTION_INTERVAL_S:-3600}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -90,6 +92,8 @@ services:
     environment:
       <<: *common-env
       SERVICE_NAME: api
+      MAX_WS_CLIENTS: ${MAX_WS_CLIENTS:-50}
+      MAX_WS_PER_IP: ${MAX_WS_PER_IP:-5}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:

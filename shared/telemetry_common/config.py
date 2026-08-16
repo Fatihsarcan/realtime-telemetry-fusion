@@ -52,6 +52,20 @@ class Settings:
     batch_size: int = field(default_factory=lambda: _env_int("PROCESSOR_BATCH_SIZE", 500))
     batch_flush_ms: int = field(default_factory=lambda: _env_int("PROCESSOR_BATCH_FLUSH_MS", 1000))
 
+    # Veri saklama suresi. Disk sinirli oldugu icin eski gozlemler otomatik silinir;
+    # aksi halde tablo suresiz buyur ve disk dolunca sistem yazamaz hale gelir.
+    retention_days: int = field(default_factory=lambda: _env_int("RETENTION_DAYS", 7))
+    retention_interval_s: int = field(default_factory=lambda: _env_int("RETENTION_INTERVAL_S", 3600))
+
+    # --- API sinirlari ---
+    # Ayni anda kabul edilecek en fazla WebSocket istemcisi.
+    #
+    # Neden 50: bir istemci canli akistan ayda yaklasik 11 GB veri alir.
+    # 50 istemci ~550 GB/ay eder; Oracle'in 10 TB ucretsiz cikis kotasinin
+    # %6'si. Sinir kaldirilirsa yogun trafik kotayi zorlayabilir.
+    max_ws_clients: int = field(default_factory=lambda: _env_int("MAX_WS_CLIENTS", 50))
+    max_ws_per_ip: int = field(default_factory=lambda: _env_int("MAX_WS_PER_IP", 5))
+
     log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO"))
 
 

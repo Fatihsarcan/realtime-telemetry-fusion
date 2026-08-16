@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -62,6 +63,7 @@ class LiveHub:
     def __init__(self, redis: aioredis.Redis) -> None:
         self._redis = redis
         self._clients: set[asyncio.Queue] = set()
+        self._per_ip: Counter[str] = Counter()
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -73,14 +75,33 @@ class LiveHub:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
 
-    def subscribe(self) -> asyncio.Queue:
+    def subscribe(self, client_ip: str) -> asyncio.Queue | None:
+        """Sinirlar icindeyse abonelik acar, degilse None doner.
+
+        Sinirsiz baglanti kabul etmek, hatali bir istemci dongusunun veya bot
+        trafiginin bellegi ve giden trafigi tuketmesine yol acar.
+        """
+        if len(self._clients) >= settings.max_ws_clients:
+            return None
+        if self._per_ip[client_ip] >= settings.max_ws_per_ip:
+            return None
+
         # Yavas istemci tum sistemi yavaslatmasin: kuyruk dolarsa mesaj dusurulur
         queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        queue.__dict__["client_ip"] = client_ip
         self._clients.add(queue)
+        self._per_ip[client_ip] += 1
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
+        if queue not in self._clients:
+            return
         self._clients.discard(queue)
+        client_ip = queue.__dict__.get("client_ip")
+        if client_ip and self._per_ip[client_ip] > 0:
+            self._per_ip[client_ip] -= 1
+            if self._per_ip[client_ip] == 0:
+                del self._per_ip[client_ip]
 
     @property
     def client_count(self) -> int:
@@ -233,15 +254,26 @@ async def stats() -> dict[str, Any]:
             "observations_last_minute": db["last_minute"],
         },
         "live_clients": state["hub"].client_count,
+        "limits": {
+            "max_ws_clients": settings.max_ws_clients,
+            "max_ws_per_ip": settings.max_ws_per_ip,
+            "retention_days": settings.retention_days,
+        },
     }
 
 
 @app.websocket("/ws/live")
 async def ws_live(websocket: WebSocket) -> None:
     """Her yeni gozlemi anlik olarak istemciye iter."""
-    await websocket.accept()
     hub: LiveHub = state["hub"]
-    queue = hub.subscribe()
+    client_ip = _client_ip(websocket)
+    queue = hub.subscribe(client_ip)
+    if queue is None:
+        # 1013 = Try Again Later
+        await websocket.close(code=1013, reason="Baglanti siniri doldu")
+        return
+
+    await websocket.accept()
     try:
         while True:
             payload = await queue.get()
@@ -252,6 +284,14 @@ async def ws_live(websocket: WebSocket) -> None:
         log.warning("websocket hatasi", extra={"fields": {"error": str(exc)}})
     finally:
         hub.unsubscribe(queue)
+
+
+def _client_ip(websocket: WebSocket) -> str:
+    """Caddy arkasinda gercek istemci IP'si X-Real-IP baslindan gelir."""
+    forwarded = websocket.headers.get("x-real-ip") or websocket.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return websocket.client.host if websocket.client else "bilinmiyor"
 
 
 def _parse_bbox(bbox: str | None) -> tuple[float, float, float, float] | None:

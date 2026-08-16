@@ -66,6 +66,35 @@ def _track_row(o: Observation) -> tuple:
     )
 
 
+async def purge_old(pool: asyncpg.Pool, retention_days: int) -> int:
+    """Saklama suresini asan gozlemleri siler.
+
+    Disk sabit ve sinirli. Temizlik olmazsa tablo suresiz buyur, disk dolar ve
+    sistem yazamaz hale gelir. Silme parcali yapilir; tek seferde milyonlarca
+    satir silmek tabloyu uzun sure kilitler.
+    """
+    chunk = 10000
+    total = 0
+    async with pool.acquire() as conn:
+        while True:
+            status = await conn.execute(
+                """
+                DELETE FROM observations
+                WHERE id IN (
+                    SELECT id FROM observations
+                    WHERE ts < NOW() - make_interval(days => $1)
+                    LIMIT $2
+                )
+                """,
+                retention_days, chunk,
+            )
+            deleted = int(status.split()[-1])
+            total += deleted
+            if deleted < chunk:
+                break
+    return total
+
+
 async def write_batch(pool: asyncpg.Pool, observations: list[Observation]) -> None:
     """Gozlemleri ve turev track durumunu tek transaction icinde yazar."""
     if not observations:
