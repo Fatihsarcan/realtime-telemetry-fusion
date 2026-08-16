@@ -1,0 +1,29 @@
+# Bu dosyayi "terraform.tfvars" olarak kopyalayip doldurun.
+# terraform.tfvars ve *.pem dosyalari .gitignore'da, repoya girmez.
+#
+# Asagidaki ilk bes degeri Oracle Konsolu'nda su ekrandan kopyalayacaksiniz:
+#   Sag ust profil ikonu > User settings > Tokens and keys > API keys > Add API key
+#   > "Generate API key pair" > ozel anahtari indir > Add
+#   > acilan "Configuration file preview" kutusundaki degerler
+
+tenancy_ocid     = "ocid1.tenancy.oc1..xxxxxxxx"
+user_ocid        = "ocid1.user.oc1..xxxxxxxx"
+fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+private_key_path = "C:/Users/Fatih/.oci/oci_api_key.pem"
+region           = "eu-frankfurt-1"
+
+# Sunucuya baglanmak icin kullanacaginiz SSH acik anahtari.
+# Yoksa olusturun:  ssh-keygen -t ed25519 -f $HOME/.ssh/telemetry_fusion
+ssh_public_key_path = "C:/Users/Fatih/.ssh/telemetry_fusion.pub"
+
+# --- Always Free sinirlari icinde kalan varsayilanlar ---
+# ocpus                     = 2    # kota: 4
+# memory_in_gbs             = 12   # kota: 24
+# boot_volume_size_in_gbs   = 50   # kota: 200
+# availability_domain_index = 0    # "Out of host capacity" alirsaniz 1 veya 2 deneyin
+
+# Herhangi bir ucret olusursa uyari maili gelsin (bos birakilirsa butce kurulmaz)
+budget_alert_email = "mehmetpcp@icloud.com"
+
+# Guvenlik: SSH'i yalnizca kendi IP'nize acmak icin, or. "88.230.1.2/32"
+# allowed_ssh_cidr = "0.0.0.0/0"

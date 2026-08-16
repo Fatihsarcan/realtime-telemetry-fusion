@@ -9,3 +9,14 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# Terraform - durum dosyasi ve kimlik bilgileri asla repoya girmez
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+terraform.tfvars
+*.tfvars.json
+crash.log
+*.pem
+*.key

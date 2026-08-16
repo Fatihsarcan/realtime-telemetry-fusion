@@ -1,0 +1,43 @@
+#cloud-config
+# Sunucu ilk acilista kendini hazirlar: Docker kurulur, guvenlik duvari acilir.
+# Uygulama kodu daha sonra kopyalanip `docker compose` ile baslatilir.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - iptables-persistent
+
+write_files:
+  # Kucuk makinede Docker build sirasinda bellek basincini yumusatir
+  - path: /etc/sysctl.d/99-telemetry.conf
+    content: |
+      vm.swappiness=10
+      net.core.somaxconn=1024
+
+runcmd:
+  # Docker resmi deposundan kurulur (Ubuntu deposundaki surum eski)
+  - curl -fsSL https://get.docker.com | sh
+  - usermod -aG docker ubuntu
+  - systemctl enable --now docker
+
+  # Oracle Ubuntu imajlarinda iptables varsayilan olarak her seyi kapatir.
+  # Konsoldaki Security List yeterli degil, isletim sistemi tarafi da acilmali.
+  - iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+  - iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+  - netfilter-persistent save
+
+  # Kucuk makinede derleme sirasinda OOM olmasin diye 2 GB takas alani
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - sh -c 'echo "/swapfile none swap sw 0 0" >> /etc/fstab'
+
+  - sysctl --system
+  - touch /var/log/telemetry-cloud-init-done
+
+final_message: "Sunucu hazir (cloud-init $UPTIME saniyede tamamlandi)"
