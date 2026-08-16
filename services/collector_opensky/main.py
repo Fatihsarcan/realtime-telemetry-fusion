@@ -141,6 +141,7 @@ def to_observation(state: list[Any]) -> Observation | None:
         obs = Observation(
             source="opensky",
             source_id=icao24,
+            object_type="aircraft",
             ts=ts,
             lat=float(lat),
             lon=float(lon),

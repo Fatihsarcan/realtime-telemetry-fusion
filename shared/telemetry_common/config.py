@@ -48,6 +48,20 @@ class Settings:
     # Bos birakilirsa tum dunya cekilir. "lamin,lamax,lomin,lomax" formati.
     opensky_bbox: str = field(default_factory=lambda: _env("OPENSKY_BBOX", "35.5,42.5,25.5,45.0"))
 
+    # --- Uydu toplayicisi ---
+    # TLE yorunge elemanlari saatlerce gecerli kalir; sik cekmenin anlami yok.
+    tle_refresh_s: int = field(default_factory=lambda: _env_int("TLE_REFRESH_S", 21600))
+    # Konumlar lokalde hesaplandigi icin bu aralik dis kotaya takilmaz.
+    satellite_interval_s: float = field(default_factory=lambda: _env_float("SATELLITE_INTERVAL_S", 10.0))
+    satellite_group: str = field(default_factory=lambda: _env("SATELLITE_GROUP", "visual"))
+
+    # --- Korelasyon (fuzyon) ---
+    # Bir uydunun yer izdusumu, bir ucaga bu mesafeden yakinsa "kapsama" sayilir.
+    correlation_radius_km: float = field(default_factory=lambda: _env_float("CORRELATION_RADIUS_KM", 250.0))
+    correlation_interval_s: int = field(default_factory=lambda: _env_int("CORRELATION_INTERVAL_S", 30))
+    # Korelasyona girecek kayitlarin en fazla bu kadar eski olmasina izin verilir.
+    correlation_max_age_s: int = field(default_factory=lambda: _env_int("CORRELATION_MAX_AGE_S", 120))
+
     # --- Processor ayarlari ---
     batch_size: int = field(default_factory=lambda: _env_int("PROCESSOR_BATCH_SIZE", 500))
     batch_flush_ms: int = field(default_factory=lambda: _env_int("PROCESSOR_BATCH_FLUSH_MS", 1000))

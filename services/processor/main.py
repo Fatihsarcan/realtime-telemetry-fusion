@@ -17,7 +17,15 @@ import time
 import aio_pika
 import redis.asyncio as aioredis
 
-from store import create_pool, purge_old, write_batch
+from fusion import correlate
+from store import (
+    create_pool,
+    ensure_schema,
+    load_recent_tracks,
+    purge_old,
+    write_batch,
+    write_correlations,
+)
 from telemetry_common import Observation, get_logger, settings
 from telemetry_common.bus import connect, declare_topology
 
@@ -154,6 +162,52 @@ async def retention_worker(pool, stopping: asyncio.Event) -> None:
             log.error("temizlik hatasi", extra={"fields": {"error": str(exc)}})
 
 
+async def correlation_worker(pool, redis: aioredis.Redis, stopping: asyncio.Event) -> None:
+    """Kaynaklar arasi eslesmeleri duzenli olarak hesaplar.
+
+    Bu, hattin tek "fuzyon" adimidir: iki bagimsiz kaynaktan gelen ve ortak
+    modele normalize edilmis nesneler burada birbirine baglanir.
+    """
+    while not stopping.is_set():
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stopping.wait(), timeout=settings.correlation_interval_s)
+        if stopping.is_set():
+            return
+
+        started = time.perf_counter()
+        try:
+            aircraft = await load_recent_tracks(pool, "aircraft", settings.correlation_max_age_s)
+            satellites = await load_recent_tracks(pool, "satellite", settings.correlation_max_age_s)
+            matches = correlate(aircraft, satellites, settings.correlation_radius_km)
+            written = await write_correlations(pool, matches)
+
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            await redis.hset(
+                STATS_KEY,
+                mapping={
+                    "correlations_last_run": len(matches),
+                    "correlation_ms": f"{elapsed_ms:.1f}",
+                    "aircraft_tracked": len(aircraft),
+                    "satellites_tracked": len(satellites),
+                },
+            )
+            if matches:
+                await redis.hincrby(STATS_KEY, "correlations_total", written)
+            log.info(
+                "korelasyon tamamlandi",
+                extra={
+                    "fields": {
+                        "aircraft": len(aircraft),
+                        "satellites": len(satellites),
+                        "matches": len(matches),
+                        "duration_ms": round(elapsed_ms, 1),
+                    }
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - korelasyon hatasi hatti durdurmamali
+            log.error("korelasyon hatasi", extra={"fields": {"error": str(exc)}})
+
+
 async def run() -> None:
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -162,6 +216,7 @@ async def run() -> None:
             loop.add_signal_handler(sig, stopping.set)
 
     pool = await create_pool(settings)
+    await ensure_schema(pool)
     redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     dedup = Deduplicator(redis)
     connection = await connect(settings)
@@ -178,6 +233,7 @@ async def run() -> None:
         lock = asyncio.Lock()
         flusher = asyncio.create_task(periodic_flusher(pool, redis, dedup, buffer, lock, stopping))
         cleaner = asyncio.create_task(retention_worker(pool, stopping))
+        correlator = asyncio.create_task(correlation_worker(pool, redis, stopping))
 
         try:
             async with queue.iterator() as messages:
@@ -200,7 +256,7 @@ async def run() -> None:
                         await flush(pool, redis, dedup, buffer, lock)
         finally:
             stopping.set()
-            for task in (flusher, cleaner):
+            for task in (flusher, cleaner, correlator):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task

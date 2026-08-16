@@ -23,12 +23,26 @@
 
 ## What it does
 
-The platform currently ingests live **ADS-B aircraft telemetry** from the OpenSky Network: roughly 300
-aircraft over Turkish airspace, each reporting position, altitude, velocity and heading.
+The platform ingests two structurally different live telemetry sources and fuses them into a single
+picture:
 
-The aircraft are the payload, not the product. **The product is the pipeline** — the part that keeps
-working when the source rate-limits you, when the same observation arrives five times, when packets
-arrive out of order, and when a service dies mid-batch. Swap the collector and the same pipeline
+| Source | Nature | Volume |
+|---|---|---|
+| **OpenSky Network** (ADS-B) | Positions arrive ready-made from a rate-limited external API | ~300 aircraft |
+| **Celestrak** (TLE + SGP4) | No positions are supplied — only orbital elements; positions are propagated locally | 157 satellites |
+
+That contrast is the point. One source hands you a position and charges you for asking; the other
+hands you a mathematical description of an orbit and leaves the computation to you. Both are
+normalised into the same `Observation` model, after which they become directly comparable — which is
+what makes the fusion step possible at all.
+
+**The fusion output** answers a question neither source can answer alone: *which satellite is
+currently passing over which aircraft?* In surveillance terms this is coverage analysis — which
+platform could observe a given target right now.
+
+The tracked objects are the payload, not the product. **The product is the pipeline** — the part that
+keeps working when a source rate-limits you, when the same observation arrives five times, when
+packets arrive out of order, and when a service dies mid-batch. Add a collector and the same pipeline
 carries vessel AIS, UAV telemetry, sensor networks or vehicle tracking without touching anything
 downstream.
 
@@ -51,18 +65,19 @@ modes rather than the happy path:
 ## Architecture
 
 ```
-                    ┌──────────────────┐
-   OpenSky ADS-B ──►│ collector-opensky│──┐
-                    └──────────────────┘  │
-                    ┌──────────────────┐  │   ┌──────────┐   ┌───────────┐
-   (AIS / others) ─►│ collector-*      │──┼──►│ RabbitMQ │──►│ processor │
-                    └──────────────────┘  │   └──────────┘   └─────┬─────┘
+                    ┌────────────────────┐
+   OpenSky ADS-B ──►│ collector-opensky  │──┐
+                    └────────────────────┘  │
+                    ┌────────────────────┐  │ ┌──────────┐   ┌───────────┐
+   Celestrak TLE ──►│collector-satellites│──┼►│ RabbitMQ │──►│ processor │
+                    │  (SGP4 propagation)│  │ └──────────┘   └─────┬─────┘
                                           │    topic exchange      │
                                           │    + dead-letter       │
+                    └────────────────────┘  │                     │
                                           │                        ▼
                                           │            ┌───────────────────────┐
                                           │            │ normalise → dedup →   │
-                                          │            │ batch write           │
+                                          │            │ batch write → CORRELATE│
                                           │            └───┬───────────────┬───┘
                                           │                ▼               ▼
                                           │        ┌──────────────┐  ┌──────────┐
@@ -86,8 +101,9 @@ source means writing one collector and publishing to the same exchange** — not
 | Service | Responsibility | Stack |
 |---|---|---|
 | `collector-opensky` | Fetch, normalise, publish; OAuth2 token refresh, quota pacing | httpx, aio-pika |
+| `collector-satellites` | Fetch TLE catalogue, propagate orbits locally, publish | skyfield (SGP4) |
 | `rabbitmq` | Decouple ingest from processing; backpressure; dead-lettering | RabbitMQ topic exchange |
-| `processor` | Deduplicate, batch-write, publish live updates, enforce retention | asyncpg, redis |
+| `processor` | Deduplicate, batch-write, correlate across sources, enforce retention | asyncpg, redis |
 | `postgres` | Append-only observation time series + latest-state table | PostgreSQL 16 |
 | `redis` | Latest-state cache + WebSocket fan-out channel | Redis 7 |
 | `api` | REST history queries, WebSocket live feed, pipeline metrics | FastAPI, uvicorn |
@@ -114,8 +130,9 @@ access, which works but has a much smaller daily quota.
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/tracks?source=&bbox=&limit=` | Latest known position of every tracked object — served from Redis, never touches the database |
+| `GET /api/tracks?source=&object_type=&bbox=&limit=` | Latest known position of every tracked object — served from Redis, never touches the database |
 | `GET /api/tracks/{source}/{id}/history?minutes=60` | Historical track of one object, from PostgreSQL |
+| `GET /api/correlations?minutes=10&source_id=` | Fusion output: cross-source spatial matches |
 | `GET /api/stats` | Pipeline metrics: throughput, duplicates dropped, batch latency p50/p95 |
 | `GET /health` | Liveness check that actually exercises Redis and PostgreSQL |
 | `WS /ws/live` | Pushes every new observation as it is processed |
@@ -150,6 +167,19 @@ dead-lettered rather than retried forever.
 
 **Out-of-order packets.** The latest-state upsert carries `WHERE EXCLUDED.last_ts > tracks.last_ts`,
 so a delayed older packet can never overwrite newer state.
+
+**Fusion is a separate stage, not a query.** Correlation runs on its own schedule against the
+latest-state table rather than inline with ingestion, for two reasons: ingest latency stays unaffected
+by how expensive correlation becomes, and correlation sees a consistent snapshot of *all* sources
+rather than whatever happened to be in the current batch. Only tracks updated within the last two
+minutes are considered — matching against an object's last known position after it left coverage would
+produce confident nonsense.
+
+**Correlation cost.** The naive comparison is O(n×m) — 300 aircraft against 157 satellites is ~47,000
+distance calculations. A latitude-band pre-filter (binary search over sorted latitudes) discards most
+pairs before the expensive haversine runs, which keeps a full cycle at **6–9 ms**. Brute force is
+honest at this scale; grid indexing or moving the predicate into PostGIS is the natural next step if
+the catalogue grows by orders of magnitude.
 
 **Why both Redis and PostgreSQL.** "Where is it now?" and "where has it been for two hours?" have
 completely different access patterns — one is key-based, hot and freshness-critical; the other is a
@@ -189,10 +219,13 @@ Measured on a development laptop against live traffic — indicative, not a benc
 
 | Metric | Value |
 |---|---|
-| Aircraft per poll | ~300 |
-| Observations stored | 38,000+ |
+| Aircraft tracked | ~180 |
+| Satellites propagated | 157 |
+| Observations stored | 74,000+ |
 | Duplicates rejected | 11,600+ |
 | Batch write latency (p50 / p95) | 31 ms / 56 ms |
+| Full correlation cycle | 6–9 ms |
+| Cross-source matches per cycle | 12–46 |
 | Query cost measured from source | 3 credits per call |
 
 ## Deployment
@@ -228,7 +261,8 @@ types and blocks `apply` if anything else appears, a zero-spend budget alert is 
 
 ## Roadmap
 
-- [ ] Second source (vessel AIS) and cross-source correlation
+- [x] Second source and cross-source correlation
+- [ ] Elevation-angle filtering so low passes are excluded from coverage claims
 - [ ] Elasticsearch for full-text and geospatial search
 - [ ] Load testing with published latency distributions
 - [ ] Prometheus metrics endpoint

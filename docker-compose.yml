@@ -64,6 +64,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  collector-satellites:
+    build:
+      context: .
+      dockerfile: services/collector_satellites/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: collector-satellites
+      SATELLITE_GROUP: ${SATELLITE_GROUP:-visual}
+      SATELLITE_INTERVAL_S: ${SATELLITE_INTERVAL_S:-10}
+      TLE_REFRESH_S: ${TLE_REFRESH_S:-21600}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
   processor:
     build:
       context: .
@@ -75,6 +90,9 @@ services:
       PROCESSOR_BATCH_FLUSH_MS: ${PROCESSOR_BATCH_FLUSH_MS:-1000}
       RETENTION_DAYS: ${RETENTION_DAYS:-7}
       RETENTION_INTERVAL_S: ${RETENTION_INTERVAL_S:-3600}
+      CORRELATION_RADIUS_KM: ${CORRELATION_RADIUS_KM:-250}
+      CORRELATION_INTERVAL_S: ${CORRELATION_INTERVAL_S:-30}
+      CORRELATION_MAX_AGE_S: ${CORRELATION_MAX_AGE_S:-120}
     depends_on:
       rabbitmq:
         condition: service_healthy

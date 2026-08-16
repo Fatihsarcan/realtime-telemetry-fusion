@@ -12,13 +12,28 @@
 
 ## Ne yapıyor
 
-Platform şu an **OpenSky Network** üzerinden canlı **ADS-B uçak telemetrisi** işliyor: Türkiye hava
-sahasındaki yaklaşık 300 uçağın konum, irtifa, hız ve yön bilgisi.
+Platform, yapısal olarak birbirinden tamamen farklı **iki canlı telemetri kaynağını** işleyip tek bir
+resimde birleştiriyor:
 
-Uçaklar taşınan yük, ürünün kendisi değil. **Ürün, boru hattının kendisi** — kaynak kotayı kestiğinde,
-aynı gözlem beş kez geldiğinde, paketler sırasız düştüğünde ve bir servis toplu yazmanın ortasında
-çöktüğünde ayakta kalan kısım. Toplayıcıyı değiştirin, aynı hat gemi AIS verisini, İHA telemetrisini,
-sensör ağlarını veya araç takibini taşır — alt katmanların hiçbirine dokunmadan.
+| Kaynak | Doğası | Hacim |
+|---|---|---|
+| **OpenSky Network** (ADS-B) | Konumlar hazır gelir, kotalı bir dış API'den | ~300 uçak |
+| **Celestrak** (TLE + SGP4) | Konum verilmez — yalnızca yörünge elemanları gelir, konumu biz hesaplarız | 157 uydu |
+
+Bu karşıtlık projenin özü. Kaynağın biri size konumu verip sormanızın bedelini alıyor; diğeri size
+yörüngenin matematiksel tarifini verip hesabı size bırakıyor. İkisi de aynı `Observation` modeline
+normalize ediliyor ve ondan sonra doğrudan karşılaştırılabilir hale geliyorlar — füzyon adımını
+mümkün kılan da tam olarak bu.
+
+**Füzyonun çıktısı**, hiçbir kaynağın tek başına cevaplayamayacağı bir soruya cevap veriyor: *şu an
+hangi uydu hangi uçağın üzerinden geçiyor?* Gözetleme terminolojisinde bunun karşılığı kapsama
+analizidir — belirli bir hedefi o anda hangi platformun görebileceği.
+
+Takip edilen nesneler taşınan yük, ürünün kendisi değil. **Ürün, boru hattının kendisi** — kaynak
+kotayı kestiğinde, aynı gözlem beş kez geldiğinde, paketler sırasız düştüğünde ve bir servis toplu
+yazmanın ortasında çöktüğünde ayakta kalan kısım. Bir toplayıcı daha ekleyin, aynı hat gemi AIS
+verisini, İHA telemetrisini, sensör ağlarını veya araç takibini taşır — alt katmanların hiçbirine
+dokunmadan.
 
 ## Neden var
 
@@ -75,8 +90,9 @@ değişmez.
 | Servis | Sorumluluk | Teknoloji |
 |---|---|---|
 | `collector-opensky` | Çekme, normalize etme, yayınlama; OAuth2 token yenileme, kota ayarlama | httpx, aio-pika |
+| `collector-satellites` | TLE kataloğunu çekme, yörüngeyi lokalde ilerletme, yayınlama | skyfield (SGP4) |
 | `rabbitmq` | Toplama ile işlemeyi ayırma; geri basınç; dead-letter | RabbitMQ topic exchange |
-| `processor` | Tekilleştirme, toplu yazma, canlı yayın, saklama süresi | asyncpg, redis |
+| `processor` | Tekilleştirme, toplu yazma, kaynaklar arası korelasyon, saklama süresi | asyncpg, redis |
 | `postgres` | Append-only gözlem zaman serisi + son durum tablosu | PostgreSQL 16 |
 | `redis` | Anlık durum önbelleği + WebSocket dağıtım kanalı | Redis 7 |
 | `api` | REST geçmiş sorgusu, WebSocket canlı akış, metrikler | FastAPI, uvicorn |
@@ -103,8 +119,9 @@ docker compose up -d --build
 
 | Uç nokta | Açıklama |
 |---|---|
-| `GET /api/tracks?source=&bbox=&limit=` | Takip edilen her nesnenin son konumu — Redis'ten gelir, veritabanına dokunmaz |
+| `GET /api/tracks?source=&object_type=&bbox=&limit=` | Takip edilen her nesnenin son konumu — Redis'ten gelir, veritabanına dokunmaz |
 | `GET /api/tracks/{source}/{id}/history?minutes=60` | Bir nesnenin geçmiş rotası, PostgreSQL'den |
+| `GET /api/correlations?minutes=10&source_id=` | Füzyon çıktısı: kaynaklar arası uzamsal eşleşmeler |
 | `GET /api/stats` | Hat metrikleri: hacim, elenen tekrar, batch gecikmesi p50/p95 |
 | `GET /health` | Redis ve PostgreSQL bağlantılarını gerçekten sınayan sağlık kontrolü |
 | `WS /ws/live` | Her yeni gözlemi işlendiği anda iter |
@@ -134,6 +151,19 @@ sonsuza kadar denenmek yerine dead-letter kuyruğuna gider.
 
 **Sırasız paketler.** Son durum upsert'i `WHERE EXCLUDED.last_ts > tracks.last_ts` koşulu taşır, yani
 geciken eski bir paket yeni durumu asla ezemez.
+
+**Füzyon ayrı bir aşama, bir sorgu değil.** Korelasyon, veri girişiyle aynı akışta değil kendi
+takviminde ve son durum tablosu üzerinde çalışır. İki sebeple: girişin gecikmesi korelasyonun ne kadar
+pahalı olduğundan etkilenmez ve korelasyon, o anki batch'te ne varsa ona değil **tüm kaynakların**
+tutarlı bir anlık görüntüsüne bakar. Yalnızca son iki dakika içinde güncellenmiş kayıtlar hesaba
+katılır — kapsama dışına çıkmış bir nesnenin son bilinen konumuyla eşleşme üretmek, kendinden emin bir
+saçmalık üretmek olurdu.
+
+**Korelasyonun maliyeti.** Naif karşılaştırma O(n×m) — 300 uçağa karşı 157 uydu, yaklaşık 47.000
+mesafe hesabı. Enlem bandı ön elemesi (sıralı enlemler üzerinde ikili arama) pahalı haversine hesabı
+çalışmadan önce çiftlerin çoğunu eler ve tam bir tur **6-9 ms**'de biter. Bu ölçekte kaba kuvvet
+dürüst bir tercih; katalog kat kat büyürse ızgara indeksleme veya koşulu PostGIS'e taşımak doğal
+sonraki adım.
 
 **Neden hem Redis hem PostgreSQL.** "Şu an nerede?" ile "iki saatte nereden geçti?" tamamen farklı
 erişim desenleridir — biri anahtar bazlı, sıcak ve tazelik odaklı; diğeri aralık taraması, soğuk ve
@@ -172,10 +202,13 @@ Geliştirme dizüstünde, canlı trafiğe karşı ölçüldü — gösterge nite
 
 | Metrik | Değer |
 |---|---|
-| Tur başına uçak | ~300 |
-| Saklanan gözlem | 38.000+ |
+| Takip edilen uçak | ~180 |
+| İlerletilen uydu | 157 |
+| Saklanan gözlem | 74.000+ |
 | Elenen tekrar | 11.600+ |
 | Batch yazma gecikmesi (p50 / p95) | 31 ms / 56 ms |
+| Tam korelasyon turu | 6-9 ms |
+| Tur başına kaynaklar arası eşleşme | 12-46 |
 | Kaynaktan ölçülen sorgu maliyeti | çağrı başına 3 kredi |
 
 ## Kurulum
@@ -196,7 +229,8 @@ alarmı kurulur ve `destroy.ps1` her şeyi tek komutta siler.
 
 ## Yol haritası
 
-- [ ] İkinci kaynak (gemi AIS) ve kaynaklar arası korelasyon
+- [x] İkinci kaynak ve kaynaklar arası korelasyon
+- [ ] Yükseklik açısı filtresi: alçak geçişlerin kapsama sayılmaması
 - [ ] Elasticsearch ile tam metin ve coğrafi arama
 - [ ] Yük testi ve yayımlanmış gecikme dağılımları
 - [ ] Prometheus metrik uç noktası

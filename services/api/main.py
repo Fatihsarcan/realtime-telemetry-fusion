@@ -155,7 +155,8 @@ async def health() -> dict[str, Any]:
 
 @app.get("/api/tracks")
 async def list_tracks(
-    source: str | None = Query(None, description="Kaynak filtresi, or. opensky"),
+    source: str | None = Query(None, description="Kaynak filtresi, or. opensky, celestrak"),
+    object_type: str | None = Query(None, description="Tur filtresi: aircraft veya satellite"),
     bbox: str | None = Query(None, description="lat_min,lat_max,lon_min,lon_max"),
     limit: int = Query(2000, ge=1, le=10000),
 ) -> dict[str, Any]:
@@ -179,6 +180,8 @@ async def list_tracks(
         try:
             item = json.loads(raw)
         except json.JSONDecodeError:
+            continue
+        if object_type and item.get("object_type") != object_type:
             continue
         if bounds and not _within(item, bounds):
             continue
@@ -218,6 +221,41 @@ async def track_history(
     }
 
 
+@app.get("/api/correlations")
+async def correlations(
+    minutes: int = Query(10, ge=1, le=1440),
+    limit: int = Query(200, ge=1, le=2000),
+    source_id: str | None = Query(None, description="Yalnizca bu nesneyle ilgili eslesmeler"),
+) -> dict[str, Any]:
+    """Fuzyon ciktisi: kaynaklar arasi uzamsal eslesmeler.
+
+    Ornek: bir uydunun yer izdusumunun bir ucaga verilen yaricap icinde
+    yaklastigi anlar - kapsama analizi.
+    """
+    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    query = """
+        SELECT ts, a_source, a_source_id, a_object_type, a_label,
+               b_source, b_source_id, b_object_type, b_label, distance_km
+        FROM correlations
+        WHERE ts >= $1
+    """
+    params: list[Any] = [since]
+    if source_id:
+        query += " AND (a_source_id = $2 OR b_source_id = $2)"
+        params.append(source_id)
+    query += f" ORDER BY ts DESC, distance_km ASC LIMIT ${len(params) + 1}"
+    params.append(limit)
+
+    async with state["pool"].acquire() as conn:
+        rows = await conn.fetch(query, *params)
+
+    return {
+        "count": len(rows),
+        "window_minutes": minutes,
+        "correlations": [{**dict(r), "ts": r["ts"].isoformat()} for r in rows],
+    }
+
+
 @app.get("/api/stats")
 async def stats() -> dict[str, Any]:
     """Pipeline saglik metrikleri: hacim, gecikme (p50/p95), aktif nesne sayisi."""
@@ -231,7 +269,10 @@ async def stats() -> dict[str, Any]:
             SELECT
               (SELECT COUNT(*) FROM observations) AS observations,
               (SELECT COUNT(*) FROM tracks) AS tracks,
-              (SELECT COUNT(*) FROM observations WHERE ts > NOW() - INTERVAL '1 minute') AS last_minute
+              (SELECT COUNT(*) FROM observations WHERE ts > NOW() - INTERVAL '1 minute') AS last_minute,
+              (SELECT COUNT(*) FROM tracks WHERE object_type = 'aircraft') AS aircraft,
+              (SELECT COUNT(*) FROM tracks WHERE object_type = 'satellite') AS satellites,
+              (SELECT COUNT(*) FROM correlations WHERE ts > NOW() - INTERVAL '10 minutes') AS correlations_10m
             """
         )
 
@@ -252,6 +293,15 @@ async def stats() -> dict[str, Any]:
             "observations_total": db["observations"],
             "tracks_total": db["tracks"],
             "observations_last_minute": db["last_minute"],
+            "aircraft_tracked": db["aircraft"],
+            "satellites_tracked": db["satellites"],
+        },
+        "fusion": {
+            "correlations_last_10min": db["correlations_10m"],
+            "correlations_total": int(raw_stats.get("correlations_total", 0)),
+            "last_run_matches": int(raw_stats.get("correlations_last_run", 0)),
+            "last_run_ms": float(raw_stats.get("correlation_ms", 0) or 0),
+            "radius_km": settings.correlation_radius_km,
         },
         "live_clients": state["hub"].client_count,
         "limits": {

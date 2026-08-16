@@ -22,11 +22,14 @@ def utcnow() -> datetime:
 class Observation:
     """Bir kaynagin, bir nesne icin, bir andaki gozlemi."""
 
-    source: str  # "opensky", "aisstream", ...
-    source_id: str  # icao24 / mmsi / istasyon kodu
+    source: str  # "opensky", "celestrak", ...
+    source_id: str  # icao24 / NORAD katalog numarasi / istasyon kodu
     ts: datetime  # gozlem zamani (UTC)
     lat: float
     lon: float
+    # Nesnenin turu kaynagindan bagimsizdir: ayni tur birden fazla kaynaktan
+    # gelebilir. Korelasyon ve gorsellestirme buna gore yapilir.
+    object_type: str = "unknown"  # "aircraft" | "satellite"
     altitude_m: float | None = None
     speed_mps: float | None = None
     heading_deg: float | None = None
@@ -50,6 +53,11 @@ class Observation:
         if self.lat == 0.0 and self.lon == 0.0:
             return False
         return True
+
+    @property
+    def is_airborne_object(self) -> bool:
+        """Korelasyona girecek nesneler: yerdeki ucaklar hesaba katilmaz."""
+        return not self.on_ground
 
     @property
     def key(self) -> str:
