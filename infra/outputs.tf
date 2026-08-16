@@ -19,6 +19,15 @@ output "shape_summary" {
   }
 }
 
+output "harcama" {
+  description = "Butcenin bildirdigi gercek ve ongorulen harcama. Beklenen deger: 0."
+  value = var.budget_alert_email != "" ? {
+    gercek_harcama    = oci_budget_budget.zero_spend[0].actual_spend
+    ongorulen_harcama = oci_budget_budget.zero_spend[0].forecasted_spend
+    para_birimi       = "USD"
+  } : null
+}
+
 output "maliyet_notu" {
   description = "Maliyet durumu"
   value       = "Bu yapilandirmadaki tum kaynaklar Always Free kapsamindadir. Hesap 'Free Tier' olarak kaldigi surece (Upgrade to Paid Account'a basilmadigi surece) ucret olusamaz."
