@@ -1,0 +1,63 @@
+# Uretim kaplamasi (overlay). Kullanim:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Farklari:
+#  - API artik dogrudan disari acilmaz, tum trafik Caddy uzerinden gecer
+#  - Caddy ucretsiz Let's Encrypt sertifikasini otomatik alir ve yeniler
+#  - Konteynerlere bellek siniri konur (kucuk free-tier makinede takas basincini onler)
+
+services:
+  api:
+    ports: !reset []
+    expose:
+      - "8000"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  processor:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  collector-opensky:
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  postgres:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  rabbitmq:
+    ports: !reset []
+    expose:
+      - "5672"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN ayarlanmali, or. telemetry-fusion.duckdns.org}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

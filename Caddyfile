@@ -1,0 +1,17 @@
+# Ucretsiz TLS: Caddy, Let's Encrypt sertifikasini kendisi alir ve yeniler.
+# DOMAIN ortam degiskeni docker-compose.prod.yml uzerinden gelir.
+# Ornek: DOMAIN=telemetry-fusion.duckdns.org
+
+{$DOMAIN} {
+	encode gzip
+
+	# WebSocket dahil tum trafik API servisine
+	reverse_proxy api:8000 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

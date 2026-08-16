@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Telemetry Fusion — Canlı Takip</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --bg: #0d1117; --panel: rgba(22,27,34,.92); --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --ok: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text); }
+  #map { position: absolute; inset: 0; background: #0d1117; }
+  .panel {
+    position: absolute; z-index: 500; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; backdrop-filter: blur(8px);
+  }
+  #head { top: 12px; left: 12px; max-width: 320px; }
+  #head h1 { margin: 0 0 4px; font-size: 15px; letter-spacing: .2px; }
+  #head p { margin: 0; color: var(--muted); font-size: 12px; }
+  #stats { bottom: 12px; left: 12px; min-width: 260px; }
+  #stats h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
+              letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  .row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
+  .row span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
+  #live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #6e7681; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(63,185,80,.2); }
+  .plane { transition: transform .8s linear; }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: #161b22; color: var(--text); }
+  .leaflet-popup-content { margin: 10px 12px; font-size: 13px; }
+  .leaflet-popup-content b { color: var(--accent); }
+  .leaflet-container { background: #0d1117; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="panel" id="head">
+  <h1>Telemetry Fusion</h1>
+  <p>Çoklu kaynaklı telemetri füzyon platformu. Canlı ADS-B akışı — bir uçağa tıklayın, geçmiş rotası çizilsin.</p>
+  <p style="margin-top:8px"><span id="live"><span class="dot" id="dot"></span><span id="livetext">bağlanıyor…</span></span></p>
+</div>
+
+<div class="panel" id="stats">
+  <h2>Pipeline</h2>
+  <div class="row"><span>Takipteki nesne</span><span id="s-tracks">—</span></div>
+  <div class="row"><span>Toplam gözlem</span><span id="s-obs">—</span></div>
+  <div class="row"><span>Son 1 dk</span><span id="s-min">—</span></div>
+  <div class="row"><span>Elenen tekrar</span><span id="s-dup">—</span></div>
+  <div class="row"><span>Batch p50 / p95</span><span id="s-lat">—</span></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map("map", { zoomControl: true, worldCopyJump: true }).setView([39.0, 35.0], 6);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+  attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 18
+}).addTo(map);
+
+const markers = new Map();   // key -> L.Marker
+let trail = null;            // seçili nesnenin geçmiş rotası
+let selected = null;
+
+const icon = (heading, ground) => L.divIcon({
+  className: "", iconSize: [18, 18], iconAnchor: [9, 9],
+  html: `<svg class="plane" width="18" height="18" viewBox="0 0 24 24"
+           style="transform:rotate(${heading || 0}deg)">
+           <path d="M12 2 L15 12 L22 15 L22 17 L13 15 L13 20 L16 22 L16 23 L12 22 L8 23 L8 22 L11 20 L11 15 L2 17 L2 15 L9 12 Z"
+                 fill="${ground ? '#8b949e' : '#58a6ff'}" stroke="#0d1117" stroke-width=".6"/>
+         </svg>`
+});
+
+const fmt = (v, unit, digits = 0) =>
+  (v === null || v === undefined) ? "—" : `${Number(v).toFixed(digits)} ${unit}`;
+
+function popupHtml(t) {
+  return `<b>${t.label || t.source_id}</b><br>
+    ${t.country || ""}<br>
+    İrtifa: ${fmt(t.altitude_m, "m")}<br>
+    Hız: ${fmt(t.speed_mps ? t.speed_mps * 3.6 : null, "km/s")}<br>
+    Yön: ${fmt(t.heading_deg, "°")}<br>
+    <small style="color:#8b949e">${t.source} · ${t.source_id}</small>`;
+}
+
+function upsert(t) {
+  const key = `${t.source}:${t.source_id}`;
+  let marker = markers.get(key);
+  if (marker) {
+    marker.setLatLng([t.lat, t.lon]);
+    marker.setIcon(icon(t.heading_deg, t.on_ground));
+    marker.getPopup()?.setContent(popupHtml(t));
+  } else {
+    marker = L.marker([t.lat, t.lon], { icon: icon(t.heading_deg, t.on_ground) })
+      .bindPopup(popupHtml(t))
+      .on("click", () => loadHistory(t.source, t.source_id))
+      .addTo(map);
+    markers.set(key, marker);
+  }
+  marker.__ts = Date.now();
+}
+
+async function loadHistory(source, id) {
+  selected = `${source}:${id}`;
+  if (trail) { map.removeLayer(trail); trail = null; }
+  try {
+    const res = await fetch(`/api/tracks/${source}/${id}/history?minutes=120`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const points = data.points.map(p => [p.lat, p.lon]);
+    if (points.length > 1) {
+      trail = L.polyline(points, { color: "#58a6ff", weight: 2, opacity: .7 }).addTo(map);
+    }
+  } catch (_) { /* geçmiş yoksa sessiz geç */ }
+}
+
+async function bootstrap() {
+  const res = await fetch("/api/tracks?limit=3000");
+  const data = await res.json();
+  data.tracks.forEach(upsert);
+}
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+  ws.onopen = () => {
+    document.getElementById("dot").classList.add("on");
+    document.getElementById("livetext").textContent = "canlı akış bağlı";
+  };
+  ws.onmessage = (e) => { try { upsert(JSON.parse(e.data)); } catch (_) {} };
+  ws.onclose = () => {
+    document.getElementById("dot").classList.remove("on");
+    document.getElementById("livetext").textContent = "bağlantı koptu, yeniden deneniyor…";
+    setTimeout(connect, 3000);   // kopmada otomatik yeniden bağlan
+  };
+}
+
+async function refreshStats() {
+  try {
+    const s = await (await fetch("/api/stats")).json();
+    document.getElementById("s-tracks").textContent = s.database.tracks_total.toLocaleString("tr");
+    document.getElementById("s-obs").textContent = s.database.observations_total.toLocaleString("tr");
+    document.getElementById("s-min").textContent = s.database.observations_last_minute.toLocaleString("tr");
+    document.getElementById("s-dup").textContent = s.pipeline.duplicates_dropped.toLocaleString("tr");
+    document.getElementById("s-lat").textContent =
+      `${s.batch_latency_ms.p50} / ${s.batch_latency_ms.p95} ms`;
+  } catch (_) {}
+}
+
+// 10 dakikadır güncellenmeyen nesneleri haritadan düşür (kapsama dışına çıkmış)
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [key, marker] of markers) {
+    if (marker.__ts < cutoff) { map.removeLayer(marker); markers.delete(key); }
+  }
+}, 60000);
+
+bootstrap();
+connect();
+refreshStats();
+setInterval(refreshStats, 5000);
+</script>
+</body>
+</html>

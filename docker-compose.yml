@@ -1,0 +1,108 @@
+name: telemetry-fusion
+
+x-common-env: &common-env
+  AMQP_URL: amqp://${RABBITMQ_USER:-telemetry}:${RABBITMQ_PASSWORD:-telemetry}@rabbitmq:5672/
+  REDIS_URL: redis://redis:6379/0
+  POSTGRES_DSN: postgresql://${POSTGRES_USER:-telemetry}:${POSTGRES_PASSWORD:-telemetry}@postgres:5432/${POSTGRES_DB:-telemetry}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-telemetry}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-telemetry}
+      POSTGRES_DB: ${POSTGRES_DB:-telemetry}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-telemetry}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-telemetry}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-telemetry}
+    ports:
+      # Yonetim arayuzu: http://localhost:15672 (kuyruk doluluk grafigi burada)
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  collector-opensky:
+    build:
+      context: .
+      dockerfile: services/collector_opensky/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: collector-opensky
+      OPENSKY_POLL_INTERVAL_S: ${OPENSKY_POLL_INTERVAL_S:-15}
+      OPENSKY_BBOX: ${OPENSKY_BBOX:-35.5,42.5,25.5,45.0}
+      OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID:-}
+      OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET:-}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  processor:
+    build:
+      context: .
+      dockerfile: services/processor/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: processor
+      PROCESSOR_BATCH_SIZE: ${PROCESSOR_BATCH_SIZE:-500}
+      PROCESSOR_BATCH_FLUSH_MS: ${PROCESSOR_BATCH_FLUSH_MS:-1000}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Yatay olceklendirme: docker compose up -d --scale processor=3
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
