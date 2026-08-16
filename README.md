@@ -99,6 +99,24 @@ docker compose up -d --scale processor=3
 
 Processor durumsuz (stateless) tasarlandı: paylaşılan durumun tamamı Redis ve PostgreSQL'de. Kuyruk birikmeye başlarsa kopya sayısını artırmak yeterli.
 
+## Sunucuya kurulum (sıfır maliyet)
+
+Tüm yığın ücretsiz katmanlarda çalışır: Oracle Cloud Always Free sunucu, DuckDNS alan adı, Let's Encrypt sertifikası.
+
+1. **Sunucu:** Oracle Cloud → Compute → Instance oluştur → *Ampere A1 (ARM), 2 OCPU / 12 GB, Ubuntu 24.04*. "Always Free eligible" etiketli şekli seç.
+2. **Ağ:** Instance'ın subnet'inde Security List → Ingress Rules → `0.0.0.0/0` için TCP 80 ve 443 aç.
+3. **Alan adı:** <https://duckdns.org> → GitHub ile giriş → alt alan adı oluştur → sunucunun public IP'sini gir.
+4. **Kurulum:** sunucuya SSH ile bağlan ve çalıştır:
+
+```bash
+git clone <repo-url> ~/telemetry-fusion && cd ~/telemetry-fusion
+bash scripts/server-setup.sh <alt-alan-adiniz>.duckdns.org
+```
+
+Script Docker'ı kurar, `.env` dosyasını rastgele parolalarla oluşturur, güvenlik duvarını açar ve üretim kaplamasıyla servisleri başlatır. Caddy sertifikayı birkaç dakika içinde kendisi alır.
+
+Üretimde API doğrudan dışarı açılmaz; tüm trafik Caddy üzerinden HTTPS ile geçer, RabbitMQ paneli dışarıya kapalıdır.
+
 ## Yol haritası
 
 - [ ] İkinci veri kaynağı (AIS gemi telemetrisi) ve kaynaklar arası korelasyon
