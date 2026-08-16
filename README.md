@@ -87,6 +87,8 @@ curl "http://localhost:8000/api/stats" | jq
 
 **Geç gelen paketler.** `tracks` tablosundaki upsert, `WHERE EXCLUDED.last_ts > tracks.last_ts` koşuluyla çalışır: ağ gecikmesi yüzünden sıra dışı gelen eski bir paket, daha yeni durumun üstüne yazamaz.
 
+**Kaynak kotası kendi kendine yönetiliyor.** OpenSky günlük kredi kotası uygular ve her sorgunun maliyeti kapsanan alanın büyüklüğüne göre 1-4 kredi arasında değişir. Sabit bir sorgulama aralığı yazmak kırılgan olurdu: bbox değişirse ya kota gün ortasında biter ya da gereksiz yere seyrek veri toplanır. Bunun yerine collector, her cevaptaki `X-Rate-Limit-Remaining` başlığından **gerçek maliyeti ölçüyor** ve "kalan süre ÷ karşılanabilir çağrı sayısı" hesabıyla kendi aralığını ayarlıyor. Kota azaldıkça yavaşlıyor, gün dönüp kota sıfırlanınca hızlanıyor.
+
 **Neden hem Redis hem PostgreSQL?** "Şu an nerede?" sorusu ile "son iki saatte nereden geçti?" sorusunun erişim deseni tamamen farklı. Birincisi anahtar bazlı, çok sık ve tazelik odaklı — Redis. İkincisi aralık taraması, seyrek ve kalıcılık odaklı — PostgreSQL. Canlı harita bu yüzden veritabanına hiç yük bindirmiyor.
 
 **WebSocket fanout.** Her istemci için ayrı Redis aboneliği açmak bağlantıları gereksiz meşgul eder. Tek dinleyici + bellek içi dağıtım, yüzlerce istemcide de sabit maliyetli kalır. Yavaş istemcinin kuyruğu dolarsa mesajı düşürülür — bir istemci tüm yayını yavaşlatamaz.

@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aio_pika
@@ -38,6 +38,7 @@ class OpenSkyClient:
         self._client = client
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+        self._credits_remaining: int | None = None
 
     @property
     def authenticated(self) -> bool:
@@ -64,6 +65,11 @@ class OpenSkyClient:
         log.info("opensky token alindi")
         return self._token
 
+    @property
+    def credits_remaining(self) -> int | None:
+        """Son cevapta bildirilen gunluk kalan kredi."""
+        return self._credits_remaining
+
     async def fetch_states(self) -> list[list[Any]]:
         params: dict[str, float] = {}
         if settings.opensky_bbox:
@@ -79,11 +85,44 @@ class OpenSkyClient:
             headers["Authorization"] = f"Bearer {token}"
 
         resp = await self._client.get(STATES_URL, params=params, headers=headers)
+
+        # OpenSky sorgu maliyetini kapsanan alana gore hesaplar (1-4 kredi).
+        # Kalan krediyi izlemek, gunluk kotayi gun ortasinda tuketmemek icin sart.
+        remaining = resp.headers.get("X-Rate-Limit-Remaining")
+        if remaining is not None:
+            with contextlib.suppress(ValueError):
+                self._credits_remaining = int(remaining)
+
         if resp.status_code == 429:
             log.warning("opensky hiz limiti, bu tur atlaniyor")
             return []
         resp.raise_for_status()
         return resp.json().get("states") or []
+
+
+def adaptive_interval(base_s: float, credits_remaining: int | None, cost_per_call: int) -> float:
+    """Kalan krediyi gun sonuna kadar yetecek sekilde bekleme suresini ayarlar.
+
+    OpenSky kotasi her gun UTC gece yarisi sifirlanir ve her sorgu, kapsanan
+    alanin buyuklugune gore 1-4 kredi harcar. Sabit bir aralik secmek kirilgan:
+    bbox degisirse veya kota degisirse ya kota gun ortasinda biter ya da
+    gereksiz yere seyrek veri toplanir.
+
+    Bu fonksiyon her turda "kalan sure / karsilanabilir cagri sayisi" hesabini
+    yaparak kendini duzeltir; kota azaldikca yavaslar, gun donunce hizlanir.
+    """
+    if credits_remaining is None or cost_per_call <= 0:
+        return base_s
+
+    now = datetime.now(timezone.utc)
+    reset_at = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    seconds_left = max((reset_at - now).total_seconds(), 1.0)
+
+    affordable_calls = max(credits_remaining / cost_per_call, 1.0)
+    required_interval = seconds_left / affordable_calls
+
+    # Taban araliktan hizli gitme; kota bolse de gereksiz yuk bindirme
+    return max(base_s, required_interval)
 
 
 def to_observation(state: list[Any]) -> Observation | None:
@@ -145,12 +184,26 @@ async def run() -> None:
 
         async with httpx.AsyncClient(timeout=30.0) as http:
             client = OpenSkyClient(http)
+            previous_credits: int | None = None
+            cost_per_call = 3  # gozlemle duzeltilecek baslangic tahmini
+            interval = settings.opensky_poll_interval_s
+
             while not stopping.is_set():
                 started = time.perf_counter()
                 try:
                     states = await client.fetch_states()
                     observations = [obs for obs in (to_observation(s) for s in states) if obs]
                     await publish_batch(exchange, observations)
+
+                    # Gercek cagri maliyetini varsaymak yerine olc
+                    current = client.credits_remaining
+                    if previous_credits is not None and current is not None:
+                        spent = previous_credits - current
+                        if 0 < spent <= 10:
+                            cost_per_call = spent
+                    previous_credits = current
+                    interval = adaptive_interval(settings.opensky_poll_interval_s, current, cost_per_call)
+
                     log.info(
                         "tur tamamlandi",
                         extra={
@@ -159,6 +212,9 @@ async def run() -> None:
                                 "published": len(observations),
                                 "dropped": len(states) - len(observations),
                                 "duration_ms": round((time.perf_counter() - started) * 1000),
+                                "credits_remaining": client.credits_remaining,
+                                "cost_per_call": cost_per_call,
+                                "next_interval_s": round(interval, 1),
                             }
                         },
                     )
@@ -166,7 +222,7 @@ async def run() -> None:
                     log.error("cekme hatasi", extra={"fields": {"error": str(exc)}})
 
                 with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(stopping.wait(), timeout=settings.opensky_poll_interval_s)
+                    await asyncio.wait_for(stopping.wait(), timeout=interval)
 
     log.info("collector durdu")
 
