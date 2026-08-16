@@ -7,52 +7,125 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   :root {
-    --bg: #0d1117; --panel: rgba(22,27,34,.92); --border: #30363d;
-    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --ok: #3fb950;
+    --bg: #0d1117;
+    --bar: rgba(13, 17, 23, .82);
+    --panel: rgba(22, 27, 34, .9);
+    --border: #2b333c;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --ok: #3fb950;
+    --bar-h: 56px;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-         background: var(--bg); color: var(--text); }
-  #map { position: absolute; inset: 0; background: #0d1117; }
-  .panel {
-    position: absolute; z-index: 500; background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 14px 16px; backdrop-filter: blur(8px);
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  #head { top: 12px; left: 12px; max-width: 320px; }
-  #head h1 { margin: 0 0 4px; font-size: 15px; letter-spacing: .2px; }
-  #head p { margin: 0; color: var(--muted); font-size: 12px; }
-  #stats { bottom: 12px; left: 12px; min-width: 260px; }
-  #stats h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
-              letter-spacing: .08em; color: var(--muted); font-weight: 600; }
-  .row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
-  .row span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
-  #live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #6e7681; }
-  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(63,185,80,.2); }
+
+  /* ---------- üst bar ---------- */
+  header {
+    position: fixed; inset: 0 0 auto 0; height: var(--bar-h); z-index: 1000;
+    display: flex; align-items: center; gap: 16px; padding: 0 16px;
+    background: var(--bar); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .brand h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+  .brand span { color: var(--muted); font-size: 12px; white-space: nowrap;
+                overflow: hidden; text-overflow: ellipsis; }
+
+  .status {
+    display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0;
+    padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px;
+    font-size: 12px; color: var(--muted); background: rgba(255,255,255,.02);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #6e7681; flex-shrink: 0; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(63,185,80,.18); }
+
+  nav { margin-left: auto; display: flex; gap: 8px; flex-shrink: 0; }
+  nav a {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 13px; border-radius: 7px; border: 1px solid var(--border);
+    color: var(--text); text-decoration: none; font-size: 13px; font-weight: 500;
+    background: rgba(255,255,255,.03); transition: background .15s, border-color .15s;
+    white-space: nowrap;
+  }
+  nav a:hover { background: rgba(88,166,255,.12); border-color: var(--accent); }
+  nav a svg { width: 14px; height: 14px; fill: currentColor; opacity: .85; }
+
+  /* ---------- harita ---------- */
+  #map { position: fixed; inset: var(--bar-h) 0 0 0; background: var(--bg); }
+  .leaflet-container { background: var(--bg); }
+  .leaflet-top { margin-top: 8px; }
+
+  /* ---------- metrik paneli ---------- */
+  #stats {
+    position: fixed; left: 12px; bottom: 12px; z-index: 900; min-width: 250px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 13px 15px; backdrop-filter: blur(10px);
+  }
+  #stats h2 {
+    margin: 0 0 9px; font-size: 11px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .09em;
+  }
+  .row { display: flex; justify-content: space-between; gap: 20px; padding: 3px 0; font-size: 13px; }
+  .row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .hint { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--border);
+          font-size: 11.5px; color: var(--muted); }
+
   .plane { transition: transform .8s linear; }
   .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: #161b22; color: var(--text); }
-  .leaflet-popup-content { margin: 10px 12px; font-size: 13px; }
+  .leaflet-popup-content { margin: 11px 13px; font-size: 13px; line-height: 1.55; }
   .leaflet-popup-content b { color: var(--accent); }
-  .leaflet-container { background: #0d1117; }
-  a { color: var(--accent); }
+  .leaflet-popup-content small { color: var(--muted); }
+
+  @media (max-width: 720px) {
+    :root { --bar-h: 52px; }
+    .brand span, nav a span { display: none; }
+    nav a { padding: 7px 10px; }
+    #stats { min-width: 0; left: 8px; right: 8px; bottom: 8px; }
+  }
 </style>
 </head>
 <body>
+
+<header>
+  <div class="brand">
+    <h1>Telemetry Fusion</h1>
+    <span>çoklu kaynaklı gerçek zamanlı telemetri füzyonu</span>
+  </div>
+
+  <div class="status"><span class="dot" id="dot"></span><span id="livetext">bağlanıyor…</span></div>
+
+  <nav>
+    <a href="/docs" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16"><path d="M2 2h9l3 3v9a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm8 1v3h3l-3-3zM4 8h8v1H4V8zm0 3h8v1H4v-1z"/></svg>
+      <span>API</span>
+    </a>
+    <a href="/api/stats" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16"><path d="M2 13h2V7H2v6zm4 0h2V3H6v10zm4 0h2V9h-2v4zm4 0h1v1H1v-1h1V2h1v11h1"/></svg>
+      <span>Metrikler</span>
+    </a>
+    <a href="https://github.com/Fatihsarcan/realtime-telemetry-fusion" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span>GitHub</span>
+    </a>
+  </nav>
+</header>
+
 <div id="map"></div>
 
-<div class="panel" id="head">
-  <h1>Telemetry Fusion</h1>
-  <p>Çoklu kaynaklı telemetri füzyon platformu. Canlı ADS-B akışı — bir uçağa tıklayın, geçmiş rotası çizilsin.</p>
-  <p style="margin-top:8px"><span id="live"><span class="dot" id="dot"></span><span id="livetext">bağlanıyor…</span></span></p>
-</div>
-
-<div class="panel" id="stats">
+<div id="stats">
   <h2>Pipeline</h2>
-  <div class="row"><span>Takipteki nesne</span><span id="s-tracks">—</span></div>
-  <div class="row"><span>Toplam gözlem</span><span id="s-obs">—</span></div>
-  <div class="row"><span>Son 1 dk</span><span id="s-min">—</span></div>
-  <div class="row"><span>Elenen tekrar</span><span id="s-dup">—</span></div>
-  <div class="row"><span>Batch p50 / p95</span><span id="s-lat">—</span></div>
+  <div class="row"><span>Takipteki nesne</span><b id="s-tracks">—</b></div>
+  <div class="row"><span>Toplam gözlem</span><b id="s-obs">—</b></div>
+  <div class="row"><span>Son 1 dakika</span><b id="s-min">—</b></div>
+  <div class="row"><span>Elenen tekrar</span><b id="s-dup">—</b></div>
+  <div class="row"><span>Batch p50 / p95</span><b id="s-lat">—</b></div>
+  <div class="hint">Bir uçağa tıklayın — geçmiş rotası çizilir.</div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -62,9 +135,8 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
   attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 18
 }).addTo(map);
 
-const markers = new Map();   // key -> L.Marker
-let trail = null;            // seçili nesnenin geçmiş rotası
-let selected = null;
+const markers = new Map();
+let trail = null;
 
 const icon = (heading, ground) => L.divIcon({
   className: "", iconSize: [18, 18], iconAnchor: [9, 9],
@@ -77,6 +149,7 @@ const icon = (heading, ground) => L.divIcon({
 
 const fmt = (v, unit, digits = 0) =>
   (v === null || v === undefined) ? "—" : `${Number(v).toFixed(digits)} ${unit}`;
+const num = (v) => Number(v).toLocaleString("tr");
 
 function popupHtml(t) {
   return `<b>${t.label || t.source_id}</b><br>
@@ -84,7 +157,7 @@ function popupHtml(t) {
     İrtifa: ${fmt(t.altitude_m, "m")}<br>
     Hız: ${fmt(t.speed_mps ? t.speed_mps * 3.6 : null, "km/s")}<br>
     Yön: ${fmt(t.heading_deg, "°")}<br>
-    <small style="color:#8b949e">${t.source} · ${t.source_id}</small>`;
+    <small>${t.source} · ${t.source_id}</small>`;
 }
 
 function upsert(t) {
@@ -105,7 +178,6 @@ function upsert(t) {
 }
 
 async function loadHistory(source, id) {
-  selected = `${source}:${id}`;
   if (trail) { map.removeLayer(trail); trail = null; }
   try {
     const res = await fetch(`/api/tracks/${source}/${id}/history?minutes=120`);
@@ -113,7 +185,7 @@ async function loadHistory(source, id) {
     const data = await res.json();
     const points = data.points.map(p => [p.lat, p.lon]);
     if (points.length > 1) {
-      trail = L.polyline(points, { color: "#58a6ff", weight: 2, opacity: .7 }).addTo(map);
+      trail = L.polyline(points, { color: "#58a6ff", weight: 2, opacity: .75 }).addTo(map);
     }
   } catch (_) { /* geçmiş yoksa sessiz geç */ }
 }
@@ -135,17 +207,17 @@ function connect() {
   ws.onclose = () => {
     document.getElementById("dot").classList.remove("on");
     document.getElementById("livetext").textContent = "bağlantı koptu, yeniden deneniyor…";
-    setTimeout(connect, 3000);   // kopmada otomatik yeniden bağlan
+    setTimeout(connect, 3000);
   };
 }
 
 async function refreshStats() {
   try {
     const s = await (await fetch("/api/stats")).json();
-    document.getElementById("s-tracks").textContent = s.database.tracks_total.toLocaleString("tr");
-    document.getElementById("s-obs").textContent = s.database.observations_total.toLocaleString("tr");
-    document.getElementById("s-min").textContent = s.database.observations_last_minute.toLocaleString("tr");
-    document.getElementById("s-dup").textContent = s.pipeline.duplicates_dropped.toLocaleString("tr");
+    document.getElementById("s-tracks").textContent = num(s.database.tracks_total);
+    document.getElementById("s-obs").textContent = num(s.database.observations_total);
+    document.getElementById("s-min").textContent = num(s.database.observations_last_minute);
+    document.getElementById("s-dup").textContent = num(s.pipeline.duplicates_dropped);
     document.getElementById("s-lat").textContent =
       `${s.batch_latency_ms.p50} / ${s.batch_latency_ms.p95} ms`;
   } catch (_) {}
