@@ -20,3 +20,6 @@ terraform.tfvars
 crash.log
 *.pem
 *.key
+
+# Tunel loglari
+tunnel.log
